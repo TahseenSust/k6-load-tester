@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import TestBuilder from './components/TestBuilder';
-import ResultsViewer from './components/ResultsViewer';
+import { useState } from "react";
+import TestBuilder from "./components/TestBuilder";
+import ResultsViewer from "./components/ResultsViewer";
 
 export default function Home() {
   const [results, setResults] = useState(null);
@@ -15,10 +15,10 @@ export default function Home() {
     setError(null);
 
     try {
-      const response = await fetch('/api/run-test', {
-        method: 'POST',
+      const response = await fetch("/api/run-test", {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify(config),
       });
@@ -26,7 +26,7 @@ export default function Home() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.details || 'Failed to run test');
+        throw new Error(data.details || "Failed to run test");
       }
 
       setResults(data.output);
