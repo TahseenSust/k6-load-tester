@@ -11,25 +11,34 @@ export default function Home() {
 
   const handleRunTest = async (config) => {
     setIsLoading(true);
-    setResults(null);
+    setResults(''); // Initialize as empty string for streaming
     setError(null);
 
     try {
-      const response = await fetch("/api/run-test", {
-        method: "POST",
+      const response = await fetch('/api/run-test', {
+        method: 'POST',
         headers: {
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify(config),
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
-        throw new Error(data.details || "Failed to run test");
+        const data = await response.json();
+        throw new Error(data.details || 'Failed to run test');
       }
 
-      setResults(data.output);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const text = decoder.decode(value, { stream: true });
+        setResults((prev) => (prev || '') + text);
+      }
+
     } catch (err) {
       setError(err.message);
     } finally {

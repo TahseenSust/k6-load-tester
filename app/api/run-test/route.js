@@ -1,51 +1,27 @@
-import { NextResponse } from "next/server";
-import { exec } from "child_process";
-import fs from "fs";
-import path from "path";
-import { promisify } from "util";
+import { NextResponse } from 'next/server';
+import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { promisify } from 'util';
 
-function stripJSONComments(str) {
-  return str.replace(/\\"|"(?:\\"|[^"])*"|(\/\/.*|\/\*[\s\S]*?\*\/)/g, (m, g) =>
-    g ? "" : m
-  );
-}
-
-const execAsync = promisify(exec);
 const writeFileAsync = promisify(fs.writeFile);
 
 export async function POST(request) {
-  // Create a temporary file for the script
-  const scriptPath = path.join(process.cwd(), `temp_script_${Date.now()}.js`);
   try {
     const body = await request.json();
-    const {
-      url,
-      method,
-      vus,
-      duration,
-      headers,
-      queryParams,
-      body: requestBody,
-    } = body;
-
-    const cleanedRequestBody = requestBody
-      ? stripJSONComments(requestBody)
-      : null;
+    const { url, method, vus, duration, headers, queryParams, body: requestBody } = body;
 
     // Construct URL with query params
     let targetUrl = url;
     if (queryParams && Object.keys(queryParams).length > 0) {
       const queryString = new URLSearchParams(queryParams).toString();
-      const separator = targetUrl.includes("?") ? "&" : "?";
+      const separator = targetUrl.includes('?') ? '&' : '?';
       targetUrl = `${targetUrl}${separator}${queryString}`;
     }
 
     // Prepare headers and body for k6
     const k6Params = {
-      headers: {
-        ...headers,
-        "Content-Type": "application/json",
-      },
+      headers: headers || {},
     };
 
     // Generate K6 script
@@ -54,38 +30,76 @@ export async function POST(request) {
         import { sleep } from 'k6';
 
         export const options = {
-            vus: ${vus},
-            duration: '${duration}',
+          vus: ${vus},
+          duration: '${duration}',
         };
 
         export default function () {
-            const url = '${targetUrl}';
-            const payload = ${
-              cleanedRequestBody ? JSON.stringify(cleanedRequestBody) : "null"
-            };
-            const params = ${JSON.stringify(k6Params)};
-            http.request('${method}', url, payload, params);
-            sleep(1);
+          const url = '${targetUrl}';
+          const payload = ${requestBody ? JSON.stringify(requestBody) : 'null'};
+          const params = ${JSON.stringify(k6Params)};
+
+          http.request('${method}', url, payload, params);
+          sleep(1);
         }
     `;
 
+    // Create a temporary file for the script
+    const scriptPath = path.join(process.cwd(), `temp_script_${Date.now()}.js`);
     await writeFileAsync(scriptPath, scriptContent);
 
-    // Run K6
-    const { stdout, stderr } = await execAsync(`k6 run ${scriptPath}`);
+    // Create a TransformStream for streaming the output
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        // Run K6 using spawn
+        const k6Process = spawn('k6', ['run', scriptPath]);
 
-    return NextResponse.json({ output: stdout || stderr });
+        const handleOutput = (data) => {
+          controller.enqueue(encoder.encode(data.toString()));
+        };
+
+        k6Process.stdout.on('data', handleOutput);
+        k6Process.stderr.on('data', handleOutput);
+
+        k6Process.on('close', (code) => {
+          // Cleanup
+          try {
+            fs.unlinkSync(scriptPath);
+          } catch (e) {
+            console.error('Error deleting temp script:', e);
+          }
+
+          if (code !== 0) {
+            controller.enqueue(encoder.encode(`\nProcess exited with code ${code}`));
+          }
+          controller.close();
+        });
+
+        k6Process.on('error', (err) => {
+          controller.enqueue(encoder.encode(`\nError starting k6: ${err.message}`));
+          try {
+            fs.unlinkSync(scriptPath);
+          } catch (e) {
+            console.error('Error deleting temp script:', e);
+          }
+          controller.close();
+        });
+      }
+    });
+
+    return new NextResponse(stream, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Transfer-Encoding': 'chunked',
+      },
+    });
+
   } catch (error) {
-    console.error("Test execution failed:", error);
-
+    console.error('Test execution failed:', error);
     return NextResponse.json(
-      { error: "Failed to execute test", details: error.message },
+      { error: 'Failed to execute test', details: error.message },
       { status: 500 }
     );
-  } finally {
-    // Ensure cleanup in case of errors before script creation
-    if (fs.existsSync(scriptPath)) {
-      fs.unlinkSync(scriptPath);
-    }
   }
 }
